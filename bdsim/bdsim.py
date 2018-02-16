@@ -1,36 +1,170 @@
 import subprocess as sub
-import jinja2
 import re
 import pandas as pd
 import numpy as np
 from ..simulator import Simulator
+from ..simulator import SimulatorException
+from ..lib.pybdsim import pybdsim
+from .. import physics
 
-SUPPORTED_CLASSES = ['DRIFT',
-                     'RBEND',
-                     'SBEND',
-                     'QUADRUPOLE',
-                     'SEXTUPOLE',
-                     'OCTUPOLE',
-                     'DECAPOLE',
-                     'MULTIPOLE',
-                     'THINMULTIPOLE',
-                     'VKICKER',
-                     'HKICKER',
-                     'KICKER',
-                     'RF',
-                     'RCOL',
-                     'ECOL',
-                     'DEGRADER',
-                     'MUSPOILER',
-                     'SHIELD',
-                     'SOLENOID',
-                     'LASER',
-                     'TRANSFORM3D',
-                     'ELEMENT',
-                     'MARKER'
-                     ]
-SUPPORTED_PROPERTIES = ['ANGLE', 'APERTYPE', 'E1', 'E2', 'FINT', 'HGAP', 'THICK', 'TILT']
 INPUT_FILENAME = 'input.bdsim'
+
+SUPPORTED_OPTIONS = [
+            'beampipeRadius',
+            'beampipeThickness',
+            'beampipeMaterial',
+            'circular',
+            'elossHistoBinWidth',
+            'eventNumberOffset',
+            'hStyle',
+            'vhRatio',
+            'coilWidthFraction',
+            'coilHeightFraction',
+            'killNeutrinos',
+            'ngenerate',
+            'nturns',
+            'outerDiameter',
+            'physicsList',
+            'printModuloFraction',
+            'recreate',
+            'recreateFileName',
+            'startFromEvent',
+            'seed',
+            'seedStateFileName',
+            'stopSecondaries',
+            'useASCIISeedState',
+            'writeSeedState',
+            'aper1',
+            'aper2',
+            'aper3',
+            'aper4',
+            'dontSplitSBends',
+            'ignoreLocalAperture',
+            'checkOverlaps',
+            'includeIronMagFields',
+            'magnetGeometryType',
+            'outerMaterial',
+            'samplerDiameter',
+            'sensitiveBeamlineComponents',
+            'sensitiveBeamPipe',
+            'vacuumMaterial',
+            'vacuumPressure',
+            'thinElementLength',
+            'deltaChord',
+            'deltaIntersection',
+            'chordStepMinimum',
+            'includeFringeFields',
+            'integratorSet',
+            'lengthSafety',
+            'maximumEpsilonStep',
+            'maximumStepLength',
+            'maximumTrackingTime',
+            'maximumTrackLength',
+            'minimumEpsilonStep',
+            'minimumRadiusOfCurvature',
+            'deltaOneStep',
+            'defaultBiasVacuum',
+            'defaultBiasMaterial',
+            'synchRadOn',
+            'turnOnCerenkov',
+            'defaultRangeCut',
+            'prodCutPhotons',
+            'prodCutElectrons',
+            'prodCutPositrons',
+            'prodCutProtons',
+            'minimumKineticEnergy',
+            'minimumRange',
+            'storeTrajectories',
+            'storeTrajectoryDepth',
+            'storeTrajectoryEnergyThreshold',
+            'storeTrajectoryParticle',
+            'trajCutGTZ',
+            'trajCutLTR',
+            'nperfile',
+            'nSegmentsPerCircle',
+        ]
+
+
+SUPPORTED_ELEMENTS = (
+    'DRIFT',
+    'GAP',
+    'SBEND',
+    'QUADRUPOLE',
+    'SEXTUPOLE',
+    'OCTUPOLE',
+    'SLITS',
+    'COLLIMATOR',
+    'MARKER',
+    'SOLIDS'
+)
+
+
+def sequence_to_bdsim(sequence, **kwargs):
+    """Convert a pandas.DataFrame sequence onto a `pybdsim` input machine."""
+    # Verify that all element types are supported
+    if not sequence.apply(lambda e: e['TYPE'] in SUPPORTED_ELEMENTS, axis=1).all():
+        raise BdsimException("Unsupported element type present in the sequence.")
+    m = pybdsim.Builder.Machine()
+    context = kwargs.get('context', {})
+    for index, element in sequence.iterrows():
+        if element['TYPE'] == 'DRIFT' and pd.notna(element['PIPE']):
+            if pd.isna(element['APERTYPE']):
+                m.AddDrift(index,
+                           element['LENGTH']
+                           )
+            else:
+                m.AddDrift(index,
+                           element['LENGTH'],
+                           apertureType=element['APERTYPE'],
+                           aper1=(element['APERTURE'], 'm')
+                           )
+        if (element['TYPE'] == 'DRIFT' and element['PIPE'] is False) or element['TYPE'] == 'GAP':
+            m.AddGap(index, element['LENGTH'])
+        if element['TYPE'] == 'QUADRUPOLE':
+            m.AddQuadrupole(index, element['LENGTH'], k1=context.get(f"{index}_K1", 0.0))
+        if element['TYPE'] == 'SEXTUPOLE':
+            m.AddSextupole(index, element['LENGTH'], k2=context.get(f"{index}_K2", 0.0))
+        if element['TYPE'] == 'OCTUPOLE':
+            m.AddSextupole(index, element['LENGTH'], k3=context.get(f"{index}_K3", 0.0))
+        if element['TYPE'] == 'COLLIMATOR':
+            m.AddECol(index,
+                      element['LENGTH'],
+                      xsize=float(element['APERTURE']),
+                      ysize=float(element['APERTURE']),
+                      material='Copper',
+                     )
+        if element['TYPE'] == "SLITS":
+            m.AddRCol(index,
+                      element['LENGTH'],
+                      xsize=0.1,
+                      ysize=0.1,
+                      material="copper"
+                     )
+        if element['TYPE'] == "MARKER":
+            m.AddMarker(index)
+        if element['TYPE'] == "SOLIDS":
+            m.AddGap(f"{index}_GAP", element['LENGTH'])
+            m.AddPlacement(
+                index,
+                geometryFile=element['SOLIDS_FILE'],
+                x=0.0,
+                y=-0.229,
+                z=element['AT_CENTER']-50/1000,
+                phi=0.0,
+                psi=np.deg2rad(30),
+                theta=np.deg2rad(90)
+            )
+        if(element['TYPE'] == "SBEND"):
+            m.AddDipole(
+                index,
+                'sbend',
+                element['LENGTH'],
+                angle=element['ANGLE'],
+                e1=element['E1'],
+                e2=element['E2']
+            )
+    m.AddSampler("all")
+    return m
 
 
 class BdsimException(Exception):
@@ -40,118 +174,32 @@ class BdsimException(Exception):
         self.message = m
 
 
-def split_rbends(line, n=20):
-    split_line = pd.DataFrame()
-    for index, row in line.iterrows():
-        if row['CLASS'] == 'RBEND' and pd.isnull(row.get('SPLIT')):
-            angle = row['ANGLE'] / n
-            length = row['L'] / n
-            for i in range(0,n):
-                row = row.copy()
-                row.name = index + "_{}".format(i)
-                row['SPLIT'] = True
-                row['ANGLE'] = angle
-                row['L'] = length
-                split_line = split_line.append(row)
-        else:
-            split_line = split_line.append(row)
-    split_line[['THICK']] = split_line[['THICK']].applymap(bool)
-    return split_line
-
-
-def element_to_bdsim(e):
-    """Convert a pandas.Series representation onto a BDSim sequence element."""
-    bdsim = ""
-    if e.KEYWORD in ['MARKER', 'INSTRUMENT']:
-        bdsim = "{}: {};".format(e.name.replace('$', ''), "marker")
-    if e.KEYWORD in ['DRIFT', 'QUADRUPOLE', 'RBEND', 'SBEND']:
-        bdsim = "{}: {}, l={}*m".format(e.name.replace('$', ''), e.KEYWORD.lower(), e.L)
-        if e.get('BENDING_ANGLE') is not None and not np.isnan(e['BENDING_ANGLE']):
-            bdsim += f",angle=-{e['BENDING_ANGLE']}"
-        elif e.get('ANGLE') is not None and not np.isnan(e['ANGLE']):
-            bdsim += f",angle=-{e.get('ANGLE', 0)}"
-        else:
-            # Angle property not supported by the element or absent
-            bdsim += ""
-        #if pd.notnull(e['APERTYPE']):
-        #    bdsim += ", aperture={}*m".format(str(e['APERTURE']).strip('[]'))
-        if pd.notnull(e.get('PLUG')) and pd.notnull(e.get('CIRCUIT')):
-            bdsim += ", {}={{{{ {} or '0.0' }}}}".format(e['PLUG'].lower(), e['CIRCUIT'])
-        bdsim += ';'
-    return bdsim
-
-
-def sequence_to_bdsim(seq, **kwargs):
-    """Convert a pandas.DataFrame sequence onto a BDSim input."""
-    if seq is None:
-        return ""
-    sequence = seq.line
-    sequence.sort_values(by='S', inplace=True)
-    if kwargs.get("split_rbend", False):
-        sequence = split_rbends(sequence)
-    # Drift smaller than 5 microns are discarded
-    sequence = sequence.query("L > 5e-6 or KEYWORD != 'DRIFT'")
-    i = "\n".join(
-        sequence.reset_index()
-                .drop_duplicates(subset='index', keep='last')
-                .set_index('index')
-                .apply(
-            element_to_bdsim, axis=1)
-    )
-
-    i += "\n{}: line = ({});\n".format(seq.name, ",".join(sequence.index.map(lambda x: x.replace('$', ''))))
-    return i
-
-
 class BDSim(Simulator):
     """A Python wrapper around the BDSim software.
 
-    Sequence and command will be converted with the BDSim grammar and pipe'd to the subprocess.
+    Uses `pybdsim` .
     """
 
     EXECUTABLE_NAME = 'bdsim'
 
     def __init__(self, **kwargs):
+        self._bdsim_machine = None
+        self._bdsim_options = pybdsim.Options.Options()
         super().__init__(**kwargs)
-        self._syntax = bdsim_syntax
         self._exec = BDSim.EXECUTABLE_NAME
 
-    def attach(self, beamline, *args, **kwargs):
+    def _attach(self, beamline):
         super()._attach(beamline)
-        self._input = "BRHO=2.3114; DEGREE=pi/180.0;"
-
-        self._input += sequence_to_bdsim(beamline, split_rbend=False)
-        self._add_input("use", line=beamline.name)
-
-        for b in args:
-            b.line.index = b.name + b.line.index
-            self._input += sequence_to_bdsim(b, split_rbend=False)
-            self._add_input("placement",
-                            line=b.name,
-                            reference_element=kwargs.get("placement").get(b.name),
-                            reference_element_number=0,
-                            x_placement=0,
-                            z_placement=1
-                            )
+        if beamline.length is None or pd.isnull(beamline.length):
+            raise SimulatorException("Beamline length not defined.")
+        self._bdsim_machine = sequence_to_bdsim(beamline.line)
 
     def run(self, **kwargs):
         """Run bdsim as a subprocess."""
-        self._add_input("options",
-                        beampiperadius=32.5,
-                        aperturetype="circular",
-                        beampipethickness=1.0,
-                        beampipematerial="Aluminium"
-                        )
-        self._add_input("beam",
-                        particle='proton',
-                        energy=230 + 938.272,
-                        )
 
-        template_input = jinja2.Template(self._input).render(kwargs.get('context', {}))
         if self._get_exec() is None:
             raise BdsimException("Can't run BDSim if no valid path and executable are defined.")
-        with open(INPUT_FILENAME, 'w') as f:
-            f.write(template_input)
+
         p = sub.Popen(f"{self._get_exec()} --file={INPUT_FILENAME}",
                       stdin=sub.PIPE,
                       stdout=sub.PIPE,
@@ -159,11 +207,30 @@ class BDSim(Simulator):
                       cwd=".",
                       shell=True
                       )
-        self._output = p.communicate(input=template_input.encode())[0].decode()
+        self._output = p.communicate()[0].decode()
         self._warnings = [line for line in self._output.split('\n') if re.search('warning|fatal', line)]
         self._fatals = [line for line in self._output.split('\n') if re.search('fatal', line)]
         self._last_context = kwargs.get("context", {})
         if kwargs.get('debug', False):
             print(self._output)
-        #os.remove(INPUT_FILENAME)
         return self
+
+    def add_options(self, **kwargs):
+        for k, v in kwargs.items():
+            self.add_option(k, v)
+
+    def add_option(self, key, value):
+        if key not in SUPPORTED_OPTIONS:
+            raise BdsimException("Invalid option.")
+        # Ugly way to get the first letter capitalized...
+        getattr(self._bdsim_options, f"Set{key[0].upper() + key[1:] }")(value)
+
+    def beam_from_file(self, beam_file, **kwargs):
+        b = pybdsim.Beam.Beam(
+            particletype=kwargs.get('particletype', 'proton'),
+            energy=kwargs.get('energy', physics.PROTON_MASS/1000),
+            distrtype='userfile',
+            distrFile=f"\"{beam_file}\"",
+            distrFileFormat='"x[m]:xp[rad]:y[m]:yp[rad]:E[MeV]"'
+        )
+        self._bdsim_machine.AddBeam(b)

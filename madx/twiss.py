@@ -52,7 +52,7 @@ def read_ptc_twiss(file):
     headers.drop(headers.columns[[0, 1]], inplace=True, axis=1)
     df = pd.read_csv(file,
                      header=None,
-                     names=headers,
+                     names=headers.columns.values,
                      na_filter=False,
                      skiprows=PTC_TWISS_DATA_SKIP_ROWS,
                      delim_whitespace=True
@@ -71,13 +71,9 @@ def twiss(**kwargs):
     line = kwargs.get('line', None)
     if line is None:
         raise TwissException("Beamline and MAD-X objects need to be defined.")
-    m = Madx(beamlines=[line])
+    m = Madx(beamlines=[line], ptc_use_knl_only=kwargs.get('ptc_use_knl_only', False))
     m.beam(line.name)
-    m.twiss(line=kwargs.get('periodic', False),
-            ptc=kwargs.get('ptc', False),
-            centre=True,
-            start=kwargs.get("start", None)
-            )
+    m.twiss(**kwargs)
     errors = m.run(**kwargs).fatals
     if kwargs.get("debug", False):
         print(m.input)

@@ -18,7 +18,7 @@ class Beamline:
     The internal representation is essentially a pandas DataFrames.
     """
 
-    def __init__(self, beamline, name=None, from_survey=False):
+    def __init__(self, beamline, name=None, from_survey=False, with_expansion=True):
         """
         :param beamline: defines the beamline to be created. It can be
             - a single pandas Dataframe
@@ -51,7 +51,8 @@ class Beamline:
             # again to reexpand
 
         # Compute derived data until a fixed point sequence is reached
-        self.__expand_sequence_data()
+        if with_expansion:
+            self.__expand_sequence_data()
 
         # Compute the sequence length
         if self.__length == 0 and self.__beamline.get('AT_EXIT') is not None:
@@ -66,13 +67,16 @@ class Beamline:
         # Some type inference to get the sequence right
         # Sequence from a pandas.DataFrame
         if isinstance(beamline, pd.DataFrame):
-            self.__beamline = beamline.set_index('NAME') if beamline.index.names[0] is not 'NAME' else beamline
+            if 'NAME' in beamline.columns:
+                self.__beamline = beamline.set_index('NAME') if beamline.index.names[0] is not 'NAME' else beamline
+            else:
+                self.__beamline = beamline
             if self.__name is None:
                 self.__name = getattr(beamline, 'name', 'BEAMLINE')
             else:
                 self.__beamline.name = self.__name
             if self.__beamline.size == 0:
-                raise BeamlineException ("Empty dataframe.")
+                raise BeamlineException("Empty dataframe.")
         # Sequence from a list
         # Assume that a DataFrame can be created from the list
         if isinstance(beamline, list):
@@ -129,6 +133,10 @@ class Beamline:
         """The sequence length."""
         return self.__length
 
+    def add_extra_drift(self, extra):
+        """Increase the sequence length by adding a drift"""
+        self.__length += extra
+
     @property
     def line(self):
         """The beamline representation."""
@@ -183,3 +191,38 @@ class Beamline:
         bl.at[element, 'CLASS'] = 'QUADRUPOLE'
         bl.at[element, 'APERTYPE'] = np.nan
         bl.at[element, 'APERTURE'] = np.nan
+
+    def add_drifts(self, with_pipe=True):
+        line_with_drifts = pd.DataFrame()
+        at_entry = 0
+
+        def create_drift(name, length, at):
+            s = pd.Series(
+                {
+                    'CLASS': 'DRIFT',
+                    'TYPE': 'DRIFT',
+                    'PIPE': with_pipe,
+                    'LENGTH': length,
+                    'AT_ENTRY': at,
+                    'AT_CENTER': at + length / 2.0,
+                    'AT_EXIT': at + length
+                }
+            )
+            s.name = name
+            return s
+
+        for r in self.__beamline.iterrows():
+            i = r[0]
+            e = r[1]
+            diff = e['AT_ENTRY'] - at_entry
+            if diff == 0:
+                line_with_drifts = line_with_drifts.append(e)
+            else:
+                line_with_drifts = line_with_drifts.append(create_drift(
+                    name=f"DRIFT_{i}",
+                    length=diff,
+                    at=at_entry
+                )).append(e)
+                at_entry = e['AT_EXIT']
+
+        return Beamline(line_with_drifts)

@@ -33,29 +33,49 @@ def twiss(ax, bl, **kwargs):
         filled_plot(ax, bl['S'], 0, -2 * 1000 * bl['YMAX'], palette[cy], True, alpha=0.2)
 
 
-def beta(ax, bl):
+def beta(ax, bl, **kwargs):
     """Plot the Twiss beta functions."""
-    twiss_function_plot(ax, bl, ['BET'])
+    if kwargs.get('ptc', False):
+        twiss_function_plot(ax, bl, ['BET'])
+    else:
+        ax.plot(bl.line['S'], bl.line['BETA11'], color=palette['X'])
+        ax.plot(bl.line['S'], bl.line['BETA22'], color=palette['Y'])
 
 
-def alpha(ax, bl):
+def alpha(ax, bl, **kwargs):
     """Plot the Twiss alpha functions."""
-    twiss_function_plot(ax, bl, ['ALF'])
+    if kwargs.get('ptc', False):
+        twiss_function_plot(ax, bl, ['ALF'])
+    else:
+        ax.plot(bl.line['S'], bl.line['ALFA11'], color=palette['X'])
+        ax.plot(bl.line['S'], bl.line['ALFA22'], color=palette['Y'])
 
 
 def dispersion(ax, bl, **kwargs):
     """Plot the dispersion functions."""
-    twiss_function_plot(ax, bl, ['D'])
+    if kwargs.get('ptc', False):
+        twiss_function_plot(ax, bl, ['DISP'], ptc=True)
+    else:
+        # Caution: MAD-X dispersion is affected by relativistic factors
+        # See section 1.7.4 of the MAD-X user guide
+        ax.plot(bl.line['S'], kwargs.get('beta', 1)*bl.line['DX'], color=palette['X'])
+        ax.plot(bl.line['S'], kwargs.get('beta', 1)*bl.line['DY'], color=palette['Y'])
 
 
-def phase_advance(ax, bl):
+def phase_advance(ax, bl, **kwargs):
     """Plot the phase advance."""
-    twiss_function_plot(ax, bl, ['MU'])
+    twiss_function_plot(ax, bl, ['MU'], kwargs.get('ptc', False))
 
 
-def twiss_function_plot(ax, bl, functions):
+def twiss_function_plot(ax, bl, functions, **kwargs):
     bl = bl.line
 
+    if kwargs.get('ptc', False):
+        x = '1'
+        y = '3'
+    else:
+        x = 'X'
+        y = 'Y'
     for f in functions:
-        ax.plot(bl['S'], bl[f+'X'], color=palette['X'])
-        ax.plot(bl['S'], bl[f+'Y'], color=palette['Y'])
+        ax.plot(bl['S'], bl[f+x], color=palette['X'])
+        ax.plot(bl['S'], bl[f+y], color=palette['Y'])

@@ -20,14 +20,17 @@ def match(**kwargs):
     line = kwargs.get('line', None)
     if line is None:
         raise MatchException("Beamline and MAD-X objects need to be defined.")
-    m = Madx(beamlines=[line])
+    m = Madx(beamlines=[line], ptc_use_knl_only=kwargs.get('ptc_use_knl_only', False))
     m.beam(line.name)
     m.match(sequence=line.name,
-            line=True,
+            line=not kwargs.get('periodic', True),
             vary=kwargs.get('vary', {}),
             constraints=kwargs.get('constraints', []),
+            global_constraints=kwargs.get('global_constraints', []),
             context=kwargs.get('context', {}),
-            method=kwargs.get('method', 'jacobian')
+            method=kwargs.get('method', 'jacobian'),
+            ptc=kwargs.get('ptc', False),
+            ptc_params=kwargs.get('ptc_params', {})
             )
     errors = m.run(**kwargs).fatals
     if kwargs.get("debug", False):
@@ -38,7 +41,7 @@ def match(**kwargs):
     data = process_match_output(m.output)
     matched_context = kwargs.get('context', {}).copy()
     for k, v in data['variables'].items():
-        matched_context[k.upper()] = v['final']
+        matched_context[k.upper()] = float(v['final'])
     data['context'] = matched_context
     return data
 
@@ -75,6 +78,6 @@ def process_match_output(output):
     return {
         'constraints': match_constraints,
         'variables': match_variables,
-        'penalty': match_penalty,
-        'summary': filter(None, match_summary)
+        'penalty': float(match_penalty),
+        'summary': list(filter(None, match_summary))
     }

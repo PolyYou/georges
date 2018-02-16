@@ -7,30 +7,117 @@ from .grammar import madx_syntax
 from ..simulator import Simulator
 from ..simulator import SimulatorException
 
-SUPPORTED_PROPERTIES = ['APERTYPE',
-                        'E1',
-                        'E2',
-                        'FINT',
-                        'HGAP',
-                        'THICK',
-                        'TILT',
-                        'K1',
-                        'K2',
-                        'K3',
-                        'K1S',
-                        'K2S',
-                        'K3S',
-                        ]
 
-SUPPORTED_CLASSES = ['QUADRUPOLE',
-                     'RBEND',
-                     'SBEND',
-                     'SEXTUPOLE',
-                     'OCTUPOLE',
-                     'MARKER',
-                     'COLLIMATOR',
-                     'INSTRUMENT',
-                     ]
+def is_number(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+SUPPORTED_PROPERTIES = [
+    'THICK',
+    'APERTYPE',
+]
+
+SUPPORTED_PROPERTIES_DEFERRED = [
+    'E1',
+    'E2',
+    'HGAP',
+    'TILT',
+    'KICK',
+    'HKICK',
+    'VKICK',
+]
+
+SUPPORTED_K_PROPERTIES = [
+    'K1',
+    'K2',
+    'K3',
+    'K1S',
+    'K2S',
+    'K3S',
+]
+
+SUPPORTED_PTC_PROPERTIES = [
+    'NST',
+    'MODEL',
+    'METHOD',
+]
+
+SUPPORTED_PTC_K_PROPERTIES = [
+    'KNL',
+    'KSL'
+]
+
+SUPPORTED_CLASSES = [
+    'QUADRUPOLE',
+    'RBEND',
+    'SBEND',
+    'SEXTUPOLE',
+    'OCTUPOLE',
+    'MULTIPOLE',
+    'MARKER',
+    'COLLIMATOR',
+    'INSTRUMENT',
+    'HKICKER',
+    'VKICKER',
+    'KICKER',
+    'SROTATION',
+]
+
+MAD_DEFAULT_TWISS_COLUMNS = ['NAME', 'KEYWORD', 'S', 'BETX', 'ALFX', 'MUX',
+                             'BETY', 'ALFY', 'MUY',
+                             'X', 'PX', 'Y', 'PY',
+                             'T', 'PT',
+                             'DX', 'DPX',
+                             'DY', 'DPY',
+                             'PHIX', 'DMUX',
+                             'PHIY', 'DMUY',
+                             'DDX', 'DDPX',
+                             'DDY', 'DDPY',
+                             'K1L', 'K2L', 'K3L', 'K4L', 'K5L', 'K6L',
+                             'K1SL', 'K2SL', 'K3SL', 'K4SL', 'K5SL', 'K6SL',
+                             'ENERGY', 'L', 'ANGLE',
+                             'HKICK', 'VKICK', 'TILT',
+                             'E1', 'E2', 'H1', 'H2', 'HGAP',
+                             'FINT', 'FINTX', 'KSI',
+                             'APERTYPE', 'APER_1', 'APER_2']
+
+PTC_DEFAULT_TWISS_COLUMNS = [
+    'NAME',
+    'S',
+    'BETA11',
+    'BETA22',
+    'ALFA11',
+    'ALFA22',
+    'MU1',
+    'MU2',
+    'DISP1',
+    'DISP2',
+    'DISP3',
+    'DISP4',
+    'X',
+    'PX',
+    'Y',
+    'PY',
+]
+
+PTC_DEFAULTS = {
+    'TIME': False,
+    'MODEL': 1,
+    'METHOD': 6,
+    'NST': 5,
+    'EXACT': True,
+    'FRINGE': False,
+    'DEBUGLEVEL': 1,
+    'MAXACCELERATION': True,
+    'EXACT_MIS': False,
+    'TOTALPATH': False,
+    'RADIATION': False,
+    'ENVELOPE': False,
+}
 
 
 class MadxException(Exception):
@@ -40,7 +127,7 @@ class MadxException(Exception):
         self.message = m
 
 
-def element_to_mad(e):
+def element_to_mad(e, ptc_use_knl_only=False):
     """Convert a pandas.Series representation onto a MAD-X sequence element."""
     if e.CLASS not in SUPPORTED_CLASSES:
         return ""
@@ -52,32 +139,93 @@ def element_to_mad(e):
     else:
         # Angle property not supported by the element or absent
         mad += ""
+
+    # Add all supported MAD-X properties
+    mad += ', '.join(["{}:={}".format(p, e[p]) for p in SUPPORTED_PROPERTIES_DEFERRED if pd.notnull(e.get(p, None))])
+    if not mad.endswith(', '):
+        mad += ', '
+    if (e.CLASS is 'SBEND' or e.CLASS is 'RBEND') and pd.notnull(e.get('FINT', None)):
+        mad += f", FINT={e['FINT']}"
     mad += ', '.join(["{}={}".format(p, e[p]) for p in SUPPORTED_PROPERTIES if pd.notnull(e.get(p, None))])
+    if not mad.endswith(', '):
+        mad += ', '
+    if not ptc_use_knl_only:
+        mad += ', '.join(["{}:={}".format(p, e[p]) for p in SUPPORTED_K_PROPERTIES if pd.notnull(e.get(p, None))])
+
+    # Add PTC specific properties and convert to integrated gradients
+    if not mad.endswith(', '):
+        mad += ', '
+
+    def transform_ptc_k(k, l):
+        kk = k.strip('{}').split(',')
+        kkl = [f"{k}*{l}" for k in kk]
+        return '{' + ', '.join(kkl) + '}'
+
+    mad += ', '.join(
+        [
+            f"{p}:={transform_ptc_k(e[p], e['LENGTH'])}" for p in SUPPORTED_PTC_K_PROPERTIES if
+            pd.notnull(e.get(p, None))
+        ]
+    )
+    if not mad.endswith(', '):
+        mad += ', '
+    mad += ', '.join(["{}:={}".format(p, e[p]) for p in SUPPORTED_PTC_PROPERTIES if pd.notnull(e.get(p, None))])
+
     if pd.notnull(e['LENGTH']) and e['LENGTH'] != 0.0:
         mad += ", L={}".format(e['LENGTH'])
-    if pd.notnull(e.get('APERTYPE', None)):
+    if pd.notnull(e.get('APERTYPE', None)) and pd.notnull(e.get('APERTURE', None)):
         mad += ", APERTURE={}".format(str(e['APERTURE']).strip('[]'))
-    if pd.notnull(e.get('PLUG')) and pd.notnull(e.get('CIRCUIT')) and pd.isnull(e.get('VALUE')):
-        mad += ", {}:={}".format(e['PLUG'], e['CIRCUIT'])
-    if pd.notnull(e.get('PLUG')) and pd.notnull(e.get('VALUE')):
-        mad += ", {}={}".format(e['PLUG'], e['VALUE'])
+
+    # Add 'knobs'
+    if pd.notnull(e.get('PLUG')) and pd.notnull(e.get('CIRCUIT')):
+        if e.get('PLUG') == 'APERTURE':
+            circuit = e['CIRCUIT'].strip('{}').split(',')
+            if len(circuit) == 1:
+                circuit.append(circuit[0])
+            mad += ", {}:={}, {}".format(e['PLUG'], circuit[0], circuit[1])
+        else:
+            mad += ", {}:={}".format(e['PLUG'], e['CIRCUIT'])
+
     mad += ", AT={}".format(e['AT_CENTER'])
     mad += ";"
     return mad
 
 
-def sequence_to_mad(sequence):
+def sequence_to_mad(sequence, ptc_use_knl_only=False):
     """Convert a pandas.DataFrame sequence onto a MAD-X input."""
     sequence.sort_values(by='AT_CENTER', inplace=True)
     sequence.query("TYPE != 'SOLIDS' and TYPE != 'SLITS'", inplace=True)
     if sequence is None:
         return ""
     m = "{}: SEQUENCE, L={}, REFER=CENTER;\n".format(sequence.name, sequence.length)
-    m += '\n'.join(sequence.apply(element_to_mad, axis=1)) + '\n'
+    m += '\n'.join(sequence.apply(lambda x: element_to_mad(x, ptc_use_knl_only), axis=1)) + '\n'
     m += "ENDSEQUENCE;\n"
+
+    processed_variables = set()
+
+    def context_variable_to_mad(var):
+        if var in processed_variables:
+            return None
+        else:
+            processed_variables.add(var)
+        return '\n'.join(
+            [
+                f"{c.strip()}:={{{{ {c.strip()} or '0.0' }}}};" for c in var.strip('{}').split(',') if not is_number(c)
+            ]
+        )
+
     if 'CIRCUIT' in sequence:
-        m += '\n'.join(sequence['CIRCUIT'].dropna().map(lambda c: "{}:={{{{ {} or '0.0' }}}};".format(c, c)))
+        m += '\n'.join(filter(None, sequence['CIRCUIT'].dropna().map(context_variable_to_mad)))
         m += '\n'
+
+    if 'KNL' in sequence:
+        m += '\n'.join(filter(None, sequence['KNL'].dropna().map(context_variable_to_mad)))
+        m += '\n'
+
+    if 'KSL' in sequence:
+        m += '\n'.join(filter(None, sequence['KSL'].dropna().map(context_variable_to_mad)))
+        m += '\n'
+
     return m
 
 
@@ -90,6 +238,7 @@ class Madx(Simulator):
     EXECUTABLE_NAME = 'madx'
 
     def __init__(self, **kwargs):
+        self._ptc_use_knl_only = kwargs.get('ptc_use_knl_only', False)
         super().__init__(**kwargs)
         self._syntax = madx_syntax
         self._exec = Madx.EXECUTABLE_NAME
@@ -98,7 +247,7 @@ class Madx(Simulator):
         super()._attach(beamline)
         if beamline.length is None or pd.isnull(beamline.length):
             raise SimulatorException("Beamline length not defined.")
-        self._input += sequence_to_mad(beamline.line)
+        self._input += sequence_to_mad(beamline.line, ptc_use_knl_only=self._ptc_use_knl_only)
 
     def run(self, **kwargs):
         """Run madx as a subprocess."""
@@ -230,27 +379,55 @@ class Madx(Simulator):
             self.raw("ENDEDIT;")
             self.raw("USE, SEQUENCE={};".format(kwargs.get('line').name))
 
-        self.raw("SELECT, FLAG=sectormap, range='Q3E';")
-        self.raw("SELECT, FLAG=sectormap, range='P2E';")
+        # Add each columns for TWISS (improve notation ? )
+        for param in MAD_DEFAULT_TWISS_COLUMNS:
+            self._add_input('select_columns', 'twiss', param)
+
+        # self.raw("SELECT, FLAG=sectormap, range='Q3E';")
+        # self.raw("SELECT, FLAG=sectormap, range='P2E';")
         options = ""
         for k, v in kwargs.items():
-            if k not in ['ptc', 'start', 'line']:
+            if k not in ['ptc', 'start', 'line', 'ptc_params']:
                 options += ",%s=%s" % (k, v)
-        self._add_input('twiss_beamline', kwargs.get('file', 'twiss.outx'), options)
+        if kwargs.get('line', False):
+            self._add_input('twiss', kwargs.get('file', 'twiss.outx'), options)
+        else:
+            self._add_input('twiss_beamline', kwargs.get('file', 'twiss.outx'), True, options)
         return self
 
     def __ptc_twiss(self, **kwargs):
-        if kwargs.get("fringe"):
-            self.raw("PTC_SETSWITCH, FRINGE=True;")
+        ptc_params = kwargs.get('ptc_params', {})
+        columns = ",".join(kwargs.get('columns', PTC_DEFAULT_TWISS_COLUMNS))
+        if kwargs.get('select_range'):
+            self._add_input('select_columns_range', "PTC_TWISS", columns, kwargs.get('select_range'))
+        else:
+            self._add_input('select_columns', "PTC_TWISS", columns)
         self._add_input('ptc_create_universe')
         self._add_input('ptc_create_layout',
-                         False, 1, 6, 5, True, kwargs.get('fringe', False))
+                        ptc_params.get('time', PTC_DEFAULTS['TIME']),
+                        ptc_params.get('model', PTC_DEFAULTS['MODEL']),
+                        ptc_params.get('method', PTC_DEFAULTS['METHOD']),
+                        ptc_params.get('nst', PTC_DEFAULTS['NST']),
+                        ptc_params.get('exact', PTC_DEFAULTS['EXACT']))
+        self._add_input('ptc_setswitch',
+                        ptc_params.get('debuglevel', PTC_DEFAULTS['DEBUGLEVEL']),
+                        ptc_params.get('maxacceleration', PTC_DEFAULTS['MAXACCELERATION']),
+                        ptc_params.get('exact_mis', PTC_DEFAULTS['EXACT_MIS']),
+                        ptc_params.get('totalpath', PTC_DEFAULTS['TOTALPATH']),
+                        ptc_params.get('radiation', PTC_DEFAULTS['RADIATION']),
+                        ptc_params.get('envelope', PTC_DEFAULTS['ENVELOPE']),
+                        ptc_params.get('fringe', PTC_DEFAULTS['FRINGE']),
+                        ptc_params.get('time', PTC_DEFAULTS['TIME']),
+                        )
         if kwargs.get('misalignment', False):
             self._add_input('ptc_misalign')
-        if kwargs.get('line', False):
-            self._add_input('ptc_twiss', kwargs.get('file', 'ptc_twiss.outx'),)
+        if kwargs.get('periodic', False):
+            if not ptc_params.get('co_guess'):
+                self._add_input('ptc_twiss', kwargs.get('file', 'ptc_twiss.outx'), )
+            else:
+                self._add_input('ptc_twiss_co_guess', kwargs.get('file', 'ptc_twiss.outx'), *ptc_params.get('co_guess'))
         else:
-            self._add_input('ptc_twiss_beamline', kwargs.get('file', 'ptc_twiss.outx'),)
+            self._add_input('ptc_twiss_beamline', kwargs.get('file', 'ptc_twiss.outx'), )
 
         self._add_input('ptc_end')
 
@@ -298,25 +475,34 @@ class Madx(Simulator):
             return
         self.makethin(beamline.name, **kwargs)
         self._add_input('track_beamline')
-        self._add_particles_for_tracking(particles)
+        self.__add_particles_for_tracking(particles)
         beamline.line.apply(lambda e: self.__generate_observation_points(e, beamline.length), axis=1)
         self._add_input('run_track_beamline')
         self._add_input('end_track')
         return self
 
     def __ptc_track(self, particles, beamline, **kwargs):
+        ptc_params = kwargs.get('ptc_params', {})
         if len(particles) == 0:
             print("No particles to track... Doing nothing.")
             return
 
         self._add_input('ptc_create_universe')
         self._add_input('ptc_create_layout',
-                        False,
-                        kwargs.get('model', 2),
-                        kwargs.get('method', 6),
-                        kwargs.get('nst', 10),
-                        kwargs.get('exact', True),
-                        kwargs.get('fringe', False)
+                        ptc_params.get('time', PTC_DEFAULTS['TIME']),
+                        ptc_params.get('model', PTC_DEFAULTS['MODEL']),
+                        ptc_params.get('method', PTC_DEFAULTS['METHOD']),
+                        ptc_params.get('nst', PTC_DEFAULTS['NST']),
+                        ptc_params.get('exact', PTC_DEFAULTS['EXACT']))
+        self._add_input('ptc_setswitch',
+                        ptc_params.get('debuglevel', PTC_DEFAULTS['DEBUGLEVEL']),
+                        ptc_params.get('maxacceleration', PTC_DEFAULTS['MAXACCELERATION']),
+                        ptc_params.get('exact_mis', PTC_DEFAULTS['EXACT_MIS']),
+                        ptc_params.get('totalpath', PTC_DEFAULTS['TOTALPATH']),
+                        ptc_params.get('radiation', PTC_DEFAULTS['RADIATION']),
+                        ptc_params.get('envelope', PTC_DEFAULTS['ENVELOPE']),
+                        ptc_params.get('fringe', PTC_DEFAULTS['FRINGE']),
+                        ptc_params.get('time', PTC_DEFAULTS['TIME']),
                         )
         if kwargs.get('misalignment', False):
             self._add_input('ptc_misalign')
@@ -326,7 +512,7 @@ class Madx(Simulator):
                         kwargs.get('icase', 5),
                         kwargs.get('deltap', 0.0),
                         kwargs.get('closed_orbit', False),
-                        kwargs.get('element_by_element', True),
+                        ptc_params.get('element_by_element', True),
                         kwargs.get('turns', 1),
                         True,
                         kwargs.get('onetable', True),
@@ -347,9 +533,54 @@ class Madx(Simulator):
         if constraints is None:
             raise MadxException("A dictionary of constraints should be provided.")
         if kwargs.get('line', False):
-            self._match_line(**kwargs)
+            if kwargs.get('ptc', False):
+                self._match_line_ptc(**kwargs)
+            else:
+                self._match_line(**kwargs)
         else:
             self._match_ring(**kwargs)
+
+    def _match_line_ptc(self, **kwargs):
+        if kwargs.get('context') is None:
+            raise MadxException("A context must be provided.")
+        ptc_params = kwargs.get('ptc_params')
+        self._add_input('ptc_match_macro',
+                        **{
+                            'time': ptc_params.get('time', PTC_DEFAULTS['TIME']),
+                            'model': ptc_params.get('model', PTC_DEFAULTS['MODEL']),
+                            'method': ptc_params.get('method', PTC_DEFAULTS['METHOD']),
+                            'nst': ptc_params.get('nst', PTC_DEFAULTS['NST']),
+                            'exact': ptc_params.get('exact', PTC_DEFAULTS['EXACT']),
+                            'fringe': ptc_params.get('fringe', PTC_DEFAULTS['FRINGE'])
+                        }
+                        )
+        self._add_input('match_with_ptc', kwargs['sequence'])
+        # Parameter variations
+        for v in kwargs['vary']:
+            if isinstance(v, dict):
+                if np.isnan(v['lower']) and np.isnan(v['upper']):
+                    self._add_input('match_vary_unconstrained', v['variable'])
+                else:
+                    self._add_input('match_vary', v['variable'], v['lower'], v['upper'])
+            else:
+                self._add_input('match_vary_unconstrained', v)
+        # Special macro usage for matching with PTC
+        self._add_input('match_use_macro')
+        # Constraints expressed from PTC table
+        for c in kwargs['constraints']:
+            self._add_input('match_ptc_constraint', c['range'], c['parameter'], c['value'])
+        # Regular MAD-X matching methods
+        if kwargs['method'] is 'jacobian':
+            self._add_input('match_jacobian')
+        elif kwargs['method'] is 'lmdif':
+            self._add_input('match_lmdif')
+        elif kwargs['method'] is 'migrad':
+            self._add_input('match_migrad')
+        elif kwargs['method'] is 'simplex':
+            self._add_input('match_simplex')
+        else:
+            raise MadxException("Invalid 'method' for matching. Please provide a valid entry.")
+        self._add_input('end_match')
 
     def _match_line(self, **kwargs):
         if kwargs.get('context') is None:
@@ -390,7 +621,15 @@ class Madx(Simulator):
                         deltap
                         )
         for v in kwargs['vary']:
-            self._add_input('match_vary', v['variable'], v['lower'], v['upper'])
+            if isinstance(v, dict):
+                if np.isnan(v['lower']) and np.isnan(v['upper']):
+                    self._add_input('match_vary_unconstrained', v['variable'])
+                else:
+                    self._add_input('match_vary', v['variable'], v['lower'], v['upper'])
+            else:
+                self._add_input('match_vary_unconstrained', v)
+        for c in kwargs.get('global_constraints', []):
+            self._add_input('match_global', f"{c}")
         for c in kwargs['constraints']:
             self._add_input('match_constraint', c['range'], f"{c['constraint']}")
         if kwargs['method'] is 'jacobian':
@@ -399,14 +638,47 @@ class Madx(Simulator):
             self._add_input('match_lmdif')
         elif kwargs['method'] is 'migrad':
             self._add_input('match_migrad')
+        elif kwargs['method'] is 'simplex':
+            self._add_input('match_simplex')
         else:
             raise MadxException("Invalid 'method' for matching. Please provide a valid entry.")
         self._add_input('end_match')
 
     def _match_ring(self, **kwargs):
-        pass
+        if kwargs.get('context') is None:
+            raise MadxException("A context must be provided.")
+        context = kwargs['context']
+        deltap = context.get('DELTAP', 0.0)
 
-    def __add_misalignment_element(self,beamline):
+        self._add_input('match_ring',
+                        kwargs['sequence'],
+                        deltap
+                        )
+        for v in kwargs['vary']:
+            if isinstance(v, dict):
+                if np.isnan(v['lower']) and np.isnan(v['upper']):
+                    self._add_input('match_vary_unconstrained', v['variable'])
+                else:
+                    self._add_input('match_vary', v['variable'], v['lower'], v['upper'])
+            else:
+                self._add_input('match_vary_unconstrained', v)
+        for c in kwargs.get('global_constraints', []):
+            self._add_input('match_global', f"{c}")
+        for c in kwargs.get('constraints', []):
+            self._add_input('match_constraint', c['range'], f"{c['constraint']}")
+        if kwargs['method'] is 'jacobian':
+            self._add_input('match_jacobian')
+        elif kwargs['method'] is 'lmdif':
+            self._add_input('match_lmdif')
+        elif kwargs['method'] is 'migrad':
+            self._add_input('match_migrad')
+        elif kwargs['method'] is 'simplex':
+            self._add_input('match_simplex')
+        else:
+            raise MadxException("Invalid 'method' for matching. Please provide a valid entry.")
+        self._add_input('end_match')
+
+    def __add_misalignment_element(self, beamline):
         """MAD-X misalignement of elements."""
         beamline.line.query("TYPE != 'MARKER'").apply(
             lambda r: self._add_input('mad_misalign_setup', r['TYPE'],

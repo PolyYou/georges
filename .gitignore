@@ -1,9 +1,5 @@
-__pycache__/*
 *.pyc
 __pycache__/
-bdsim/__pycache__/
-madx/__pycache__/
-plotting/__pycache__/
 .DS_Store
 .idea/shelf/
 /examples/.ipynb_checkpoints/**
@@ -21,3 +17,4 @@ examples/survey.out
 examples/tracking.outxone
 examples/twiss.outx
 docs/_build/**
+docs/_static/
